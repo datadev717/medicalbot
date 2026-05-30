@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: medical-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn bot:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        value: "0"
+      - key: TEST_MODE
+        value: "false"
+      - key: DB_PATH
+        value: "medical_bot.db"
+      - key: AUTO_SET_WEBHOOK
+        value: "false"
+      - key: PUBLIC_URL
+        sync: false
