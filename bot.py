@@ -18,7 +18,7 @@ BASE_URL = f"https://api.telegram.org/bot{TOKEN}"
 
 # Test mode: 1 hour = 3600 seconds instead of 80 days
 TEST_MODE = os.environ.get("TEST_MODE", "false").lower() == "true"
-NOTIFY_SECONDS = 3600 if TEST_MODE else 80 * 24 * 3600  # 1 hour test OR 80 days
+NOTIFY_SECONDS = 3600 if TEST_MODE else  24 * 3600  # 1 hour test OR 80 days
 
 app = Flask(__name__)
 
