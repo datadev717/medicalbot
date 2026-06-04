@@ -27,6 +27,25 @@ import secrets as _secrets
 
 # ─────────────────────────── PANEL TOKEN ───────────────────────────
 
+def get_public_base_url():
+    """
+    Bot panel havolalari uchun ochiq (public) base URL.
+    Render'da PUBLIC_URL bermasangiz ham, RENDER_EXTERNAL_URL odatda mavjud bo'ladi.
+    """
+    base = (os.environ.get("PUBLIC_URL", "") or "").strip()
+    if not base:
+        base = (os.environ.get("RENDER_EXTERNAL_URL", "") or "").strip()
+    if not base:
+        hostname = (os.environ.get("RENDER_EXTERNAL_HOSTNAME", "") or "").strip()
+        if hostname:
+            base = f"https://{hostname}"
+
+    base = base.rstrip("/")
+    if base and not (base.startswith("http://") or base.startswith("https://")):
+        base = "https://" + base
+    return base
+
+
 def make_panel_token(telegram_id):
     """Shifokor uchun xavfsiz token yaratadi (BOT_TOKEN + telegram_id asosida)."""
     secret = TOKEN or "fallback"
@@ -36,14 +55,14 @@ def make_panel_token(telegram_id):
 
 def get_panel_url(telegram_id):
     token = make_panel_token(telegram_id)
-    base = os.environ.get("PUBLIC_URL", "").strip().rstrip("/")
-    return f"{base}/panel/{telegram_id}/{token}"
+    base = get_public_base_url()
+    return f"{base}/panel/{telegram_id}/{token}" if base else None
 
 
 def get_admin_panel_url():
     token = make_panel_token(ADMIN_ID)
-    base = os.environ.get("PUBLIC_URL", "").strip().rstrip("/")
-    return f"{base}/admin/panel/{token}"
+    base = get_public_base_url()
+    return f"{base}/admin/panel/{token}" if base else None
 
 # ─────────────────────────── DATABASE ───────────────────────────
 
@@ -743,18 +762,20 @@ def process_update(update):
                 patient_id = int(data.split("_")[2])
                 handle_reminder_no(chat_id, patient_id, cq["message"]["message_id"])
             elif data == "open_panel":
-                pub = os.environ.get("PUBLIC_URL", "").strip().rstrip("/")
-                if not pub:
-                    send_message(chat_id, "❌ PUBLIC_URL env o'rnatilmagan.")
-                else:
-                    if is_admin(telegram_id):
-                        url = get_admin_panel_url()
+                if is_admin(telegram_id):
+                    url = get_admin_panel_url()
+                    if not url:
+                        send_message(chat_id, "❌ Public URL topilmadi. Render'da PUBLIC_URL ni qo'ying yoki RENDER_EXTERNAL_URL avtomatik berilganini tekshiring.")
+                    else:
                         send_message(chat_id,
                             f"🛡️ <b>Superadmin Panel:</b>\n\n"
                             f"<a href=\"{url}\">👆 Bu yerga bosing</a>\n\n"
                             f"Barcha shifokorlar va bemorlar ko'rinadi.")
+                else:
+                    url = get_panel_url(telegram_id)
+                    if not url:
+                        send_message(chat_id, "❌ Public URL topilmadi. Render'da PUBLIC_URL ni qo'ying yoki RENDER_EXTERNAL_URL avtomatik berilganini tekshiring.")
                     else:
-                        url = get_panel_url(telegram_id)
                         send_message(chat_id,
                             f"🌐 <b>Sizning panelingiz:</b>\n\n"
                             f"<a href=\"{url}\">👆 Bu yerga bosing</a>\n\n"
@@ -787,18 +808,20 @@ def process_update(update):
                 handle_admin_stats(chat_id)
 
             elif text.startswith("/panel") and (is_admin(telegram_id) or is_approved_doctor(telegram_id)):
-                pub = os.environ.get("PUBLIC_URL", "").strip().rstrip("/")
-                if not pub:
-                    send_message(chat_id, "❌ PUBLIC_URL env o'rnatilmagan. Render da PUBLIC_URL ni qo'ying.")
-                else:
-                    if is_admin(telegram_id):
-                        url = get_admin_panel_url()
+                if is_admin(telegram_id):
+                    url = get_admin_panel_url()
+                    if not url:
+                        send_message(chat_id, "❌ Public URL topilmadi. Render'da PUBLIC_URL ni qo'ying yoki RENDER_EXTERNAL_URL avtomatik berilganini tekshiring.")
+                    else:
                         send_message(chat_id,
                             f"🛡️ <b>Superadmin Panel:</b>\n\n"
                             f"<a href=\"{url}\">👆 Bu yerga bosing</a>\n\n"
                             f"Barcha shifokorlar va bemorlar ko'rinadi.")
+                else:
+                    url = get_panel_url(telegram_id)
+                    if not url:
+                        send_message(chat_id, "❌ Public URL topilmadi. Render'da PUBLIC_URL ni qo'ying yoki RENDER_EXTERNAL_URL avtomatik berilganini tekshiring.")
                     else:
-                        url = get_panel_url(telegram_id)
                         send_message(chat_id,
                             f"🌐 <b>Sizning panelingiz:</b>\n\n"
                             f"<a href=\"{url}\">👆 Bu yerga bosing</a>\n\n"
