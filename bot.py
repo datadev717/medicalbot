@@ -22,48 +22,6 @@ NOTIFY_SECONDS = 3600 if TEST_MODE else  1 * 3600  # 1 hour test OR 80 days
 
 app = Flask(__name__)
 
-import hashlib
-import secrets as _secrets
-
-# ─────────────────────────── PANEL TOKEN ───────────────────────────
-
-def get_public_base_url():
-    """
-    Bot panel havolalari uchun ochiq (public) base URL.
-    Render'da PUBLIC_URL bermasangiz ham, RENDER_EXTERNAL_URL odatda mavjud bo'ladi.
-    """
-    base = (os.environ.get("PUBLIC_URL", "") or "").strip()
-    if not base:
-        base = (os.environ.get("RENDER_EXTERNAL_URL", "") or "").strip()
-    if not base:
-        hostname = (os.environ.get("RENDER_EXTERNAL_HOSTNAME", "") or "").strip()
-        if hostname:
-            base = f"https://{hostname}"
-
-    base = base.rstrip("/")
-    if base and not (base.startswith("http://") or base.startswith("https://")):
-        base = "https://" + base
-    return base
-
-
-def make_panel_token(telegram_id):
-    """Shifokor uchun xavfsiz token yaratadi (BOT_TOKEN + telegram_id asosida)."""
-    secret = TOKEN or "fallback"
-    raw = f"{secret}:{telegram_id}:panel"
-    return hashlib.sha256(raw.encode()).hexdigest()[:32]
-
-
-def get_panel_url(telegram_id):
-    token = make_panel_token(telegram_id)
-    base = get_public_base_url()
-    return f"{base}/panel/{telegram_id}/{token}" if base else None
-
-
-def get_admin_panel_url():
-    token = make_panel_token(ADMIN_ID)
-    base = get_public_base_url()
-    return f"{base}/admin/panel/{token}" if base else None
-
 # ─────────────────────────── DATABASE ───────────────────────────
 
 DB_PATH = os.environ.get("DB_PATH", "medical_bot.db")
@@ -213,7 +171,6 @@ def admin_menu_kb():
             [{"text": "❌ Shifokor bloklash", "callback_data": "admin_block"}],
             [{"text": "📊 Barcha bemorlar", "callback_data": "admin_all_patients"}],
             [{"text": "📈 Statistika", "callback_data": "admin_stats"}],
-            [{"text": "🛡️ Admin Panel (Web)", "callback_data": "open_panel"}],
         ]
     }
 
@@ -762,24 +719,15 @@ def process_update(update):
                 patient_id = int(data.split("_")[2])
                 handle_reminder_no(chat_id, patient_id, cq["message"]["message_id"])
             elif data == "open_panel":
-                if is_admin(telegram_id):
-                    url = get_admin_panel_url()
-                    if not url:
-                        send_message(chat_id, "❌ Public URL topilmadi. Render'da PUBLIC_URL ni qo'ying yoki RENDER_EXTERNAL_URL avtomatik berilganini tekshiring.")
-                    else:
-                        send_message(chat_id,
-                            f"🛡️ <b>Superadmin Panel:</b>\n\n"
-                            f"<a href=\"{url}\">👆 Bu yerga bosing</a>\n\n"
-                            f"Barcha shifokorlar va bemorlar ko'rinadi.")
+                pub = os.environ.get("PUBLIC_URL", "").strip().rstrip("/")
+                if not pub:
+                    send_message(chat_id, "❌ PUBLIC_URL env o'rnatilmagan.")
                 else:
                     url = get_panel_url(telegram_id)
-                    if not url:
-                        send_message(chat_id, "❌ Public URL topilmadi. Render'da PUBLIC_URL ni qo'ying yoki RENDER_EXTERNAL_URL avtomatik berilganini tekshiring.")
-                    else:
-                        send_message(chat_id,
-                            f"🌐 <b>Sizning panelingiz:</b>\n\n"
-                            f"<a href=\"{url}\">👆 Bu yerga bosing</a>\n\n"
-                            f"Havola faqat siz uchun — boshqalarga bermang!")
+                    send_message(chat_id,
+                        f"🌐 <b>Sizning panelingiz:</b>\n\n"
+                        f"<a href=\"{url}\">👆 Bu yerga bosing</a>\n\n"
+                        f"Havola faqat siz uchun — boshqalarga bermang!")
             return
 
         # Regular message
@@ -808,24 +756,15 @@ def process_update(update):
                 handle_admin_stats(chat_id)
 
             elif text.startswith("/panel") and (is_admin(telegram_id) or is_approved_doctor(telegram_id)):
-                if is_admin(telegram_id):
-                    url = get_admin_panel_url()
-                    if not url:
-                        send_message(chat_id, "❌ Public URL topilmadi. Render'da PUBLIC_URL ni qo'ying yoki RENDER_EXTERNAL_URL avtomatik berilganini tekshiring.")
-                    else:
-                        send_message(chat_id,
-                            f"🛡️ <b>Superadmin Panel:</b>\n\n"
-                            f"<a href=\"{url}\">👆 Bu yerga bosing</a>\n\n"
-                            f"Barcha shifokorlar va bemorlar ko'rinadi.")
+                pub = os.environ.get("PUBLIC_URL", "").strip().rstrip("/")
+                if not pub:
+                    send_message(chat_id, "❌ PUBLIC_URL env o'rnatilmagan. Render da PUBLIC_URL ni qo'ying.")
                 else:
                     url = get_panel_url(telegram_id)
-                    if not url:
-                        send_message(chat_id, "❌ Public URL topilmadi. Render'da PUBLIC_URL ni qo'ying yoki RENDER_EXTERNAL_URL avtomatik berilganini tekshiring.")
-                    else:
-                        send_message(chat_id,
-                            f"🌐 <b>Sizning panelingiz:</b>\n\n"
-                            f"<a href=\"{url}\">👆 Bu yerga bosing</a>\n\n"
-                            f"Havola faqat siz uchun — boshqalarga bermang!")
+                    send_message(chat_id,
+                        f"🌐 <b>Sizning panelingiz:</b>\n\n"
+                        f"<a href=\"{url}\">👆 Bu yerga bosing</a>\n\n"
+                        f"Havola faqat siz uchun — boshqalarga bermang!")
 
             elif text.startswith("/testmode") and is_admin(telegram_id):
                 mode = "TEST (1 soat)" if TEST_MODE else "REAL (80 kun)"
@@ -879,6 +818,25 @@ def health():
     patients = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
     conn.close()
     return jsonify({"status": "healthy", "doctors": docs, "patients": patients})
+
+
+
+import hashlib
+import secrets as _secrets
+
+# ─────────────────────────── PANEL TOKEN ───────────────────────────
+
+def make_panel_token(telegram_id):
+    """Shifokor uchun xavfsiz token yaratadi (BOT_TOKEN + telegram_id asosida)."""
+    secret = TOKEN or "fallback"
+    raw = f"{secret}:{telegram_id}:panel"
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+
+def get_panel_url(telegram_id):
+    token = make_panel_token(telegram_id)
+    base = os.environ.get("PUBLIC_URL", "").strip().rstrip("/")
+    return f"{base}/panel/{telegram_id}/{token}"
 
 
 # ─────────────────────────── PANEL HTML ───────────────────────────
@@ -1081,268 +1039,6 @@ load();
 </script>
 </body>
 </html>"""
-
-
-ADMIN_PANEL_HTML = """<!DOCTYPE html>
-<html lang="uz">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Superadmin Panel</title>
-<style>
-  :root {
-    --primary: #7c3aed;
-    --primary-light: #f5f3ff;
-    --success: #16a34a;
-    --success-light: #f0fdf4;
-    --warning: #d97706;
-    --warning-light: #fffbeb;
-    --danger: #dc2626;
-    --danger-light: #fef2f2;
-    --bg: #f8fafc;
-    --card: #ffffff;
-    --border: #e2e8f0;
-    --text: #1e293b;
-    --text-light: #64748b;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
-  header { background: linear-gradient(135deg, #4c1d95 0%, #7c3aed 100%); color: white; padding: 20px 24px; }
-  header h1 { font-size: 1.4rem; font-weight: 700; }
-  header p { font-size: 0.85rem; opacity: 0.8; margin-top: 4px; }
-  .tabs { display: flex; background: white; border-bottom: 2px solid var(--border); padding: 0 20px; }
-  .tab { padding: 14px 20px; cursor: pointer; font-weight: 600; font-size: 0.9rem; color: var(--text-light); border-bottom: 3px solid transparent; margin-bottom: -2px; transition: all 0.15s; }
-  .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
-  .tab-content { display: none; }
-  .tab-content.active { display: block; }
-  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; padding: 20px; }
-  .stat-card { background: var(--card); border-radius: 12px; padding: 16px; border: 1px solid var(--border); text-align: center; }
-  .stat-card .number { font-size: 2rem; font-weight: 800; }
-  .stat-card .label { font-size: 0.72rem; color: var(--text-light); margin-top: 6px; }
-  .stat-card.total .number { color: var(--primary); }
-  .stat-card.pending .number { color: var(--warning); }
-  .stat-card.contacted .number { color: var(--success); }
-  .stat-card.unreachable .number { color: var(--danger); }
-  .section { padding: 16px 20px; }
-  .section h2 { font-size: 0.75rem; font-weight: 600; color: var(--text-light); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
-  .search-box { width: 100%; padding: 10px 14px; border-radius: 10px; border: 1.5px solid var(--border); font-size: 0.9rem; margin-bottom: 14px; outline: none; }
-  .search-box:focus { border-color: var(--primary); }
-  .filter-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
-  .filter-btn { padding: 6px 14px; border-radius: 20px; border: 1.5px solid var(--border); background: white; cursor: pointer; font-size: 0.82rem; font-weight: 500; }
-  .filter-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
-  .patient-card { background: var(--card); border-radius: 12px; border: 1px solid var(--border); margin-bottom: 10px; overflow: hidden; }
-  .patient-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.07); }
-  .card-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px 8px; }
-  .card-name { font-weight: 700; font-size: 0.95rem; }
-  .doc-tag { font-size: 0.72rem; background: var(--primary-light); color: var(--primary); padding: 2px 8px; border-radius: 20px; font-weight: 600; }
-  .badge { font-size: 0.72rem; font-weight: 600; padding: 3px 10px; border-radius: 20px; }
-  .badge-pending { background: var(--warning-light); color: var(--warning); }
-  .badge-retrying { background: var(--primary-light); color: var(--primary); }
-  .badge-contacted { background: var(--success-light); color: var(--success); }
-  .badge-unreachable { background: var(--danger-light); color: var(--danger); }
-  .card-body { padding: 0 16px 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px 12px; }
-  .card-field { font-size: 0.81rem; }
-  .card-field span { color: var(--text-light); }
-  .card-field b { color: var(--text); }
-  .card-divider { border: none; border-top: 1px solid var(--border); margin: 0 16px; }
-  .card-footer { padding: 7px 16px; font-size: 0.73rem; color: var(--text-light); display: flex; justify-content: space-between; }
-  .doctor-card { background: var(--card); border-radius: 12px; border: 1px solid var(--border); padding: 14px 16px; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
-  .doctor-info { display: flex; flex-direction: column; gap: 4px; }
-  .doctor-name { font-weight: 700; font-size: 0.95rem; }
-  .doctor-meta { font-size: 0.78rem; color: var(--text-light); }
-  .doctor-badge { font-size: 0.72rem; font-weight: 600; padding: 4px 12px; border-radius: 20px; }
-  .doc-approved { background: var(--success-light); color: var(--success); }
-  .doc-pending { background: var(--warning-light); color: var(--warning); }
-  .empty { text-align: center; padding: 40px 20px; color: var(--text-light); }
-  .empty .icon { font-size: 2.5rem; margin-bottom: 10px; }
-  .refresh-btn { position: fixed; bottom: 20px; right: 20px; background: var(--primary); color: white; border: none; border-radius: 50px; padding: 12px 20px; font-size: 0.85rem; font-weight: 600; cursor: pointer; box-shadow: 0 4px 12px rgba(124,58,237,0.4); }
-</style>
-</head>
-<body>
-<header>
-  <h1>🛡️ Superadmin Panel</h1>
-  <p id="header-stats">Yuklanmoqda...</p>
-</header>
-
-<div class="tabs">
-  <div class="tab active" onclick="switchTab('patients', this)">👥 Bemorlar</div>
-  <div class="tab" onclick="switchTab('doctors', this)">👨‍⚕️ Shifokorlar</div>
-</div>
-
-<div id="tab-patients" class="tab-content active">
-  <div class="stats-grid">
-    <div class="stat-card total"><div class="number" id="a-total">—</div><div class="label">Jami bemorlar</div></div>
-    <div class="stat-card pending"><div class="number" id="a-pending">—</div><div class="label">⏳ Kutilmoqda</div></div>
-    <div class="stat-card" style="--num-color:#7c3aed"><div class="number" id="a-retrying" style="color:#7c3aed">—</div><div class="label">🔄 Qayta eslatiladi</div></div>
-    <div class="stat-card contacted"><div class="number" id="a-contacted">—</div><div class="label">✅ Bog'lanildi</div></div>
-    <div class="stat-card unreachable"><div class="number" id="a-unreachable">—</div><div class="label">❌ Aloqa yo'q</div></div>
-  </div>
-  <div class="section">
-    <h2>Barcha bemorlar</h2>
-    <input class="search-box" type="text" placeholder="🔍 Ism, telefon, kasallik yoki shifokor..." id="p-search" oninput="renderPatients()">
-    <div class="filter-bar">
-      <button class="filter-btn active" data-f="all" onclick="setPFilter('all',this)">Barchasi</button>
-      <button class="filter-btn" data-f="pending" onclick="setPFilter('pending',this)">⏳ Kutilmoqda</button>
-      <button class="filter-btn" data-f="retrying" onclick="setPFilter('retrying',this)">🔄 Qayta</button>
-      <button class="filter-btn" data-f="contacted" onclick="setPFilter('contacted',this)">✅ Bog'lanildi</button>
-      <button class="filter-btn" data-f="unreachable" onclick="setPFilter('unreachable',this)">❌ Aloqa yo'q</button>
-    </div>
-    <div id="patients-list"></div>
-  </div>
-</div>
-
-<div id="tab-doctors" class="tab-content">
-  <div class="section" style="padding-top:20px">
-    <h2>Barcha shifokorlar</h2>
-    <input class="search-box" type="text" placeholder="🔍 Ism yoki username..." id="d-search" oninput="renderDoctors()">
-    <div id="doctors-list"></div>
-  </div>
-</div>
-
-<button class="refresh-btn" onclick="load()">🔄 Yangilash</button>
-
-<script>
-let allPatients = [];
-let allDoctors = [];
-let activePFilter = 'all';
-
-const STATUS_LABEL = { pending:"⏳ Kutilmoqda", retrying:"🔄 Qayta eslatiladi", contacted:"✅ Bog'lanildi", unreachable:"❌ Aloqaga chiqilmadi" };
-const STATUS_BADGE = { pending:"badge-pending", retrying:"badge-retrying", contacted:"badge-contacted", unreachable:"badge-unreachable" };
-
-function switchTab(name, btn) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-  btn.classList.add('active');
-  document.getElementById('tab-' + name).classList.add('active');
-}
-
-async function load() {
-  try {
-    const res = await fetch(location.pathname + '/data');
-    const d = await res.json();
-    if (d.error) { document.getElementById('header-stats').textContent = d.error; return; }
-    allPatients = d.patients;
-    allDoctors = d.doctors;
-    const approved = allDoctors.filter(x => x.approved).length;
-    document.getElementById('header-stats').textContent = `${approved} faol shifokor | ${allPatients.length} bemor`;
-    updateStats();
-    renderPatients();
-    renderDoctors();
-  } catch(e) {
-    document.getElementById('header-stats').textContent = 'Xatolik: ' + e.message;
-  }
-}
-
-function updateStats() {
-  document.getElementById('a-total').textContent = allPatients.length;
-  ['pending','retrying','contacted','unreachable'].forEach(s => {
-    document.getElementById('a-' + s).textContent = allPatients.filter(p => p.status === s).length;
-  });
-}
-
-function setPFilter(f, btn) {
-  activePFilter = f;
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  renderPatients();
-}
-
-function renderPatients() {
-  const q = document.getElementById('p-search').value.toLowerCase();
-  let list = allPatients;
-  if (activePFilter !== 'all') list = list.filter(p => p.status === activePFilter);
-  if (q) list = list.filter(p =>
-    p.full_name.toLowerCase().includes(q) ||
-    (p.phone||'').includes(q) ||
-    (p.disease||'').toLowerCase().includes(q) ||
-    (p.doc_name||'').toLowerCase().includes(q)
-  );
-  const el = document.getElementById('patients-list');
-  if (!list.length) { el.innerHTML = '<div class="empty"><div class="icon">🔍</div><div>Hech narsa topilmadi</div></div>'; return; }
-  el.innerHTML = list.map(p => {
-    const st = p.status || 'pending';
-    const badge = STATUS_BADGE[st] || 'badge-pending';
-    const label = STATUS_LABEL[st] || st;
-    const remind = p.next_remind_at ? p.next_remind_at.slice(0,16) : (p.notify_at ? p.notify_at.slice(0,16) : '—');
-    return `<div class="patient-card">
-      <div class="card-header">
-        <div style="display:flex;align-items:center;gap:8px">
-          <div class="card-name">👤 ${esc(p.full_name)}</div>
-          <span class="doc-tag">Dr. ${esc(p.doc_name||'?')}</span>
-        </div>
-        <span class="badge ${badge}">${label}</span>
-      </div>
-      <div class="card-body">
-        <div class="card-field"><span>📅 Yili: </span><b>${p.birth_year||'—'}</b></div>
-        <div class="card-field"><span>📞 Tel: </span><b>${esc(p.phone||'—')}</b></div>
-        <div class="card-field"><span>🏥 Kasallik: </span><b>${esc(p.disease||'—')}</b></div>
-        <div class="card-field"><span>🏠 Manzil: </span><b>${esc(p.address||'—')}</b></div>
-        ${p.notes ? `<div class="card-field" style="grid-column:1/-1"><span>📝 Izoh: </span><b>${esc(p.notes)}</b></div>` : ''}
-      </div>
-      <hr class="card-divider">
-      <div class="card-footer">
-        <span>🗓 ${(p.created_at||'').slice(0,16)}</span>
-        <span>${st==='retrying'||st==='pending' ? '⏰ '+remind : ''}</span>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-function renderDoctors() {
-  const q = document.getElementById('d-search').value.toLowerCase();
-  let list = allDoctors;
-  if (q) list = list.filter(d => d.name.toLowerCase().includes(q) || (d.username||'').toLowerCase().includes(q));
-  const el = document.getElementById('doctors-list');
-  if (!list.length) { el.innerHTML = '<div class="empty"><div class="icon">👨‍⚕️</div><div>Shifokorlar topilmadi</div></div>'; return; }
-  el.innerHTML = list.map(d => {
-    const cnt = allPatients.filter(p => p.doctor_id === d.id).length;
-    return `<div class="doctor-card">
-      <div class="doctor-info">
-        <div class="doctor-name">👨‍⚕️ ${esc(d.name)}</div>
-        <div class="doctor-meta">@${esc(d.username||'—')} · ID: ${d.telegram_id} · ${cnt} bemor</div>
-        <div class="doctor-meta">Qo'shilgan: ${(d.created_at||'').slice(0,16)}</div>
-      </div>
-      <span class="doctor-badge ${d.approved ? 'doc-approved' : 'doc-pending'}">${d.approved ? '✅ Tasdiqlangan' : '⏳ Kutmoqda'}</span>
-    </div>`;
-  }).join('');
-}
-
-function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
-load();
-</script>
-</body>
-</html>"""
-
-
-@app.route("/admin/panel/<token>", methods=["GET"])
-def admin_panel(token):
-    if not ADMIN_ID:
-        return "ADMIN_ID sozlanmagan", 403
-    expected = make_panel_token(ADMIN_ID)
-    if token != expected:
-        return "Ruxsat yo'q", 403
-    return ADMIN_PANEL_HTML
-
-
-@app.route("/admin/panel/<token>/data", methods=["GET"])
-def admin_panel_data(token):
-    if not ADMIN_ID:
-        return jsonify({"error": "ADMIN_ID sozlanmagan"}), 403
-    expected = make_panel_token(ADMIN_ID)
-    if token != expected:
-        return jsonify({"error": "Ruxsat yo'q"}), 403
-    conn = get_db()
-    doctors = conn.execute("SELECT * FROM doctors ORDER BY created_at DESC").fetchall()
-    patients = conn.execute(
-        "SELECT p.*, d.name as doc_name FROM patients p "
-        "JOIN doctors d ON p.doctor_id=d.id ORDER BY p.created_at DESC"
-    ).fetchall()
-    conn.close()
-    return jsonify({
-        "doctors": [dict(d) for d in doctors],
-        "patients": [dict(p) for p in patients],
-    })
 
 
 @app.route("/panel/<int:telegram_id>/<token>", methods=["GET"])
