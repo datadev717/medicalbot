@@ -56,9 +56,23 @@ def init_db():
             created_at TEXT DEFAULT (datetime('now','localtime')),
             notified INTEGER DEFAULT 0,
             notify_at TEXT,
+            status TEXT DEFAULT 'pending',
+            reminder_count INTEGER DEFAULT 0,
+            next_remind_at TEXT,
             FOREIGN KEY (doctor_id) REFERENCES doctors(id)
         );
+
     """)
+    # Safe migrations for existing DBs
+    for col, definition in [
+        ("status", "TEXT DEFAULT 'pending'"),
+        ("reminder_count", "INTEGER DEFAULT 0"),
+        ("next_remind_at", "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE patients ADD COLUMN {col} {definition}")
+        except Exception:
+            pass
     conn.commit()
     conn.close()
     logger.info("DB initialized.")
@@ -161,38 +175,102 @@ def admin_menu_kb():
 
 # ─────────────────────────── NOTIFY WORKER ───────────────────────────
 
+RETRY_SECONDS = 7 * 24 * 3600   # 7 kun (real); testda 5 daqiqa
+RETRY_SECONDS_TEST = 5 * 60
+
+
+def get_retry_seconds():
+    return RETRY_SECONDS_TEST if TEST_MODE else RETRY_SECONDS
+
+
+def status_label(status):
+    return {
+        "pending":      "⏳ Kutilmoqda",
+        "retrying":     "🔄 Qayta eslatiladi",
+        "contacted":    "✅ Bog'lanildi",
+        "unreachable":  "❌ Aloqaga chiqilmadi",
+    }.get(status, "⏳ Kutilmoqda")
+
+
+def send_reminder(doc_tg, patient_id, full_name, birth_year, phone, disease, address, notes, created_at, reminder_count):
+    attempt_text = ["1-eslatma", "2-eslatma", "3-eslatma"][min(reminder_count, 2)]
+    msg = (
+        f"⏰ <b>Eslatma! ({attempt_text})</b>\n\n"
+        f"Bemor: <b>{full_name}</b>\n"
+        f"Tug'ilgan yili: {birth_year}\n"
+        f"Telefon: {phone}\n"
+        f"Kasallik: {disease}\n"
+        f"Manzil: {address}\n"
+        f"Izoh: {notes or '-'}\n\n"
+        f"📅 Qo'shilgan: {created_at}\n"
+        f"{'⚠️ TEST rejimi' if TEST_MODE else '⚠️ 80 kun otdi!'}\n\n"
+        f"Bemor bilan bog'landingizmi?"
+    )
+    kb = {
+        "inline_keyboard": [[
+            {"text": "✅ Bog'lanildi", "callback_data": f"rem_yes_{patient_id}"},
+            {"text": "❌ Bog'lanilmadi", "callback_data": f"rem_no_{patient_id}"},
+        ]]
+    }
+    send_message(doc_tg, msg, reply_markup=kb)
+
+
 def notify_worker():
     logger.info(f"Notify worker started. Mode: {'TEST (1 soat)' if TEST_MODE else '80 kun'}")
     while True:
         try:
             conn = get_db()
             now = datetime.now()
-            patients = conn.execute(
+            now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+
+            # 1) Birinchi eslatma (80 kun o'tib, hali pending)
+            first_patients = conn.execute(
                 "SELECT p.*, d.telegram_id as doc_tg FROM patients p "
                 "JOIN doctors d ON p.doctor_id = d.id "
-                "WHERE p.notified=0 AND p.notify_at <= ?",
-                (now.strftime("%Y-%m-%d %H:%M:%S"),)
+                "WHERE p.status='pending' AND p.notify_at <= ?",
+                (now_str,)
             ).fetchall()
-            for p in patients:
-                msg = (
-                    f"⏰ <b>Eslatma!</b>\n\n"
-                    f"Bemor: <b>{p['full_name']}</b>\n"
-                    f"Tug'ilgan yili: {p['birth_year']}\n"
-                    f"Telefon: {p['phone']}\n"
-                    f"Kasallik: {p['disease']}\n"
-                    f"Manzil: {p['address']}\n"
-                    f"Izoh: {p['notes'] or '-'}\n\n"
-                    f"📅 Qo'shilgan: {p['created_at']}\n"
-                    f"{('⚠️ TEST: 1 soat otdi!' if TEST_MODE else '⚠️ 80 kun otdi!')}"
+            for p in first_patients:
+                send_reminder(p["doc_tg"], p["id"], p["full_name"], p["birth_year"],
+                              p["phone"], p["disease"], p["address"], p["notes"], p["created_at"], 0)
+                conn.execute(
+                    "UPDATE patients SET notified=1, status='retrying', reminder_count=1 WHERE id=?",
+                    (p["id"],)
                 )
-                send_message(p["doc_tg"], msg)
-                conn.execute("UPDATE patients SET notified=1 WHERE id=?", (p["id"],))
                 conn.commit()
-                logger.info(f"Notified doctor {p['doc_tg']} about patient {p['full_name']}")
+                logger.info(f"1-eslatma -> bemor {p['full_name']} (doc {p['doc_tg']})")
+
+            # 2) Qayta eslatmalar (status='retrying', next_remind_at vaqti keldi)
+            retry_patients = conn.execute(
+                "SELECT p.*, d.telegram_id as doc_tg FROM patients p "
+                "JOIN doctors d ON p.doctor_id = d.id "
+                "WHERE p.status='retrying' AND p.next_remind_at IS NOT NULL AND p.next_remind_at <= ?",
+                (now_str,)
+            ).fetchall()
+            for p in retry_patients:
+                rc = p["reminder_count"] or 1
+                if rc >= 3:
+                    conn.execute(
+                        "UPDATE patients SET status='unreachable', next_remind_at=NULL WHERE id=?",
+                        (p["id"],)
+                    )
+                    conn.commit()
+                    logger.info(f"Bemor {p['full_name']} -> unreachable (max urinish)")
+                else:
+                    send_reminder(p["doc_tg"], p["id"], p["full_name"], p["birth_year"],
+                                  p["phone"], p["disease"], p["address"], p["notes"], p["created_at"], rc)
+                    conn.execute(
+                        "UPDATE patients SET reminder_count=?, next_remind_at=NULL WHERE id=?",
+                        (rc + 1, p["id"])
+                    )
+                    conn.commit()
+                    logger.info(f"Qayta eslatma #{rc+1} -> bemor {p['full_name']}")
+
             conn.close()
         except Exception as e:
             logger.error(f"Notify worker error: {e}")
-        time.sleep(60)  # check every minute
+        time.sleep(60)  # har daqiqa tekshir
+
 
 
 # ─────────────────────────── BOOTSTRAP (Gunicorn/Render uchun) ───────────────────────────
@@ -298,7 +376,13 @@ def handle_list_patients(chat_id, telegram_id):
 
     text = "📋 <b>Bemorlaringiz ro'yxati:</b>\n\n"
     for i, p in enumerate(patients, 1):
-        status = "✅ Xabar berildi" if p["notified"] else f"⏳ {p['notify_at']} ga xabar"
+        st = p["status"] if p["status"] else ("contacted" if p["notified"] else "pending")
+        status = status_label(st)
+        if st == "pending":
+            status += f" ({p['notify_at'][:16]} ga eslatma)"
+        elif st == "retrying":
+            nra = p["next_remind_at"] or "?"
+            status += f" (keyingi: {nra[:16]})"
         text += (
             f"{i}. <b>{p['full_name']}</b>\n"
             f"   📅 {p['birth_year']} | 📞 {p['phone']}\n"
@@ -398,16 +482,20 @@ def handle_admin_stats(chat_id):
     conn = get_db()
     total_docs = conn.execute("SELECT COUNT(*) FROM doctors WHERE approved=1").fetchone()[0]
     total_patients = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
-    notified = conn.execute("SELECT COUNT(*) FROM patients WHERE notified=1").fetchone()[0]
-    pending = conn.execute("SELECT COUNT(*) FROM patients WHERE notified=0").fetchone()[0]
+    contacted = conn.execute("SELECT COUNT(*) FROM patients WHERE status='contacted'").fetchone()[0]
+    retrying = conn.execute("SELECT COUNT(*) FROM patients WHERE status='retrying'").fetchone()[0]
+    pending = conn.execute("SELECT COUNT(*) FROM patients WHERE status='pending'").fetchone()[0]
+    unreachable = conn.execute("SELECT COUNT(*) FROM patients WHERE status='unreachable'").fetchone()[0]
     conn.close()
     send_message(chat_id,
         f"📈 <b>Statistika:</b>\n\n"
         f"👨‍⚕️ Faol shifokorlar: {total_docs}\n"
-        f"🧑‍🤝‍🧑 Jami bemorlar: {total_patients}\n"
-        f"✅ Xabar berilganlar: {notified}\n"
-        f"⏳ Kutayotganlar: {pending}\n"
-        f"\n⚙️ Rejim: {'TEST (1 soat)' if TEST_MODE else '80 kun'}"
+        f"🧑‍🤝‍🧑 Jami bemorlar: {total_patients}\n\n"
+        f"⏳ Kutilmoqda: {pending}\n"
+        f"🔄 Qayta eslatiladi: {retrying}\n"
+        f"✅ Bog'lanildi: {contacted}\n"
+        f"❌ Aloqaga chiqilmadi: {unreachable}\n"
+        f"\n⚙️ Rejim: {'TEST (5 daqiqa retry)' if TEST_MODE else '80 kun / 7 kun retry'}"
     )
 
 
@@ -502,7 +590,13 @@ def handle_text_steps(chat_id, telegram_id, text):
 
         result = "🔍 <b>Topilgan bemorlar:</b>\n\n"
         for p in patients:
-            status = "✅ Xabar berildi" if p["notified"] else f"⏳ Xabar vaqti: {p['notify_at']}"
+            st = p["status"] if p["status"] else ("contacted" if p["notified"] else "pending")
+            status = status_label(st)
+            if st == "pending":
+                status += f" ({p['notify_at'][:16]} ga eslatma)"
+            elif st == "retrying":
+                nra = p["next_remind_at"] or "?"
+                status += f" (keyingi: {nra[:16]})"
             result += (
                 f"👤 <b>{p['full_name']}</b>\n"
                 f"   📅 {p['birth_year']} | 📞 {p['phone']}\n"
@@ -521,6 +615,62 @@ def handle_text_steps(chat_id, telegram_id, text):
         elif is_approved_doctor(telegram_id):
             send_message(chat_id, "Menyu:", reply_markup=main_menu_kb())
 
+
+
+
+def handle_reminder_yes(chat_id, patient_id, message_id):
+    """Shifokor bemor bilan bog'landi deb bildirdi."""
+    conn = get_db()
+    p = conn.execute("SELECT full_name FROM patients WHERE id=?", (patient_id,)).fetchone()
+    if p:
+        conn.execute(
+            "UPDATE patients SET status='contacted', next_remind_at=NULL WHERE id=?",
+            (patient_id,)
+        )
+        conn.commit()
+        edit_message(chat_id, message_id,
+            f"✅ <b>{p['full_name']}</b> bilan bog'landi deb belgilandi.\n"
+            f"Status: ✅ Bog'lanildi"
+        )
+        logger.info(f"Patient {patient_id} marked as contacted")
+    conn.close()
+
+
+def handle_reminder_no(chat_id, patient_id, message_id):
+    """Shifokor bemor bilan bog'lana olmadi."""
+    conn = get_db()
+    p = conn.execute("SELECT full_name, reminder_count FROM patients WHERE id=?", (patient_id,)).fetchone()
+    if p:
+        rc = p["reminder_count"] or 1
+        if rc >= 3:
+            # 3 marta ham urinib bo'ldi
+            conn.execute(
+                "UPDATE patients SET status='unreachable', next_remind_at=NULL WHERE id=?",
+                (patient_id,)
+            )
+            conn.commit()
+            edit_message(chat_id, message_id,
+                f"❌ <b>{p['full_name']}</b> bilan 3 marta ham bog'lanib bo'lmadi.\n"
+                f"Status: ❌ Aloqaga chiqilmadi\n\n"
+                f"Keyingi eslatmalar to'xtatildi."
+            )
+            logger.info(f"Patient {patient_id} marked as unreachable after 3 attempts")
+        else:
+            # 7 kundan keyin qayta eslatish
+            retry_at = (datetime.now() + timedelta(seconds=get_retry_seconds())).strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute(
+                "UPDATE patients SET status='retrying', reminder_count=?, next_remind_at=? WHERE id=?",
+                (rc, retry_at, patient_id)
+            )
+            conn.commit()
+            days_text = "5 daqiqadan" if TEST_MODE else "7 kundan"
+            edit_message(chat_id, message_id,
+                f"🔄 <b>{p['full_name']}</b> — {days_text} keyin qayta eslatiladi.\n"
+                f"Status: 🔄 Qayta eslatiladi\n"
+                f"Urinish: {rc}/3"
+            )
+            logger.info(f"Patient {patient_id} scheduled retry #{rc} at {retry_at}")
+    conn.close()
 
 # ─────────────────────────── UPDATE DISPATCHER ───────────────────────────
 
@@ -561,6 +711,12 @@ def process_update(update):
             elif data.startswith("block_"):
                 doc_tg = int(data.split("_")[1])
                 handle_block_doctor(chat_id, doc_tg)
+            elif data.startswith("rem_yes_"):
+                patient_id = int(data.split("_")[2])
+                handle_reminder_yes(chat_id, patient_id, cq["message"]["message_id"])
+            elif data.startswith("rem_no_"):
+                patient_id = int(data.split("_")[2])
+                handle_reminder_no(chat_id, patient_id, cq["message"]["message_id"])
             return
 
         # Regular message
