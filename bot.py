@@ -159,7 +159,6 @@ def main_menu_kb():
             [{"text": "➕ Bemor qo'shish", "callback_data": "add_patient"}],
             [{"text": "📋 Bemorlar ro'yxati", "callback_data": "list_patients"}],
             [{"text": "🔍 Bemor statusi", "callback_data": "patient_status"}],
-            [{"text": "🌐 Mening paneliم", "callback_data": "open_panel"}],
         ]
     }
 
